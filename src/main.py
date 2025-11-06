@@ -7,9 +7,13 @@ from src.config import QueryPlanConfig
 from src.generator import answer
 from src.index_builder import build_index
 from src.instrumentation.logging import init_logger, get_logger, RunLogger
-from src.ranking.ranker import EnsembleRanker
+
+from src.tools.base import GrepTool
+from src.tools.retrieval import FaissSearchTool, BM25ExplorerTool
+from src.tools.hierarchical import HierarchicalRetrieverTool
+from src.planning.orchestrator import AgenticOrchestrator
 from src.preprocessing.chunking import DocumentChunker
-from src.retriever import apply_seg_filter, BM25Retriever, FAISSRetriever, load_artifacts
+from src.retriever import load_artifacts
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,99 +103,58 @@ def run_index_mode(args: argparse.Namespace, cfg: QueryPlanConfig):
     )
 
 
-def get_answer(
-    question: str,
-    cfg: QueryPlanConfig,
-    args: argparse.Namespace,
-    logger: "RunLogger",
-    artifacts: Optional[Dict] = None,
-    golden_chunks: Optional[list] = None
-) -> str:
+def get_final_answer(query: str, context: str, model_path: str, max_tokens: int, system_prompt_mode: str) -> str:
     """
-    Run a single query through the pipeline.
-    """    
-    chunks = artifacts["chunks"]
-    sources = artifacts["sources"]
-    retrievers = artifacts["retrievers"]
-    ranker = artifacts["ranker"]
-    
-    logger.log_query_start(question)
-    
-    # Step 1: Get chunks (golden, retrieved, or none)
-    if golden_chunks and cfg.use_golden_chunks:
-        # Use provided golden chunks
-        ranked_chunks = golden_chunks
-    elif cfg.disable_chunks:
-        # No chunks - baseline mode
-        ranked_chunks = []
-    else:
-        # Step 1: Retrieval
-        pool_n = max(cfg.pool_size, cfg.top_k + 10)
-        raw_scores: Dict[str, Dict[int, float]] = {}
-        for retriever in retrievers:
-            raw_scores[retriever.name] = retriever.get_scores(question, pool_n, chunks)
-        # TODO: Fix retrieval logging.
-        
-        # Step 2: Ranking
-        ordered = ranker.rank(raw_scores=raw_scores)
-        topk_idxs = apply_seg_filter(cfg, chunks, ordered)
-        logger.log_chunks_used(topk_idxs, chunks, sources)
-        
-        ranked_chunks = [chunks[i] for i in topk_idxs]
-        
-        # Step 3: Final Re-ranking (if enabled)
-        # Disabled till we fix the core pipeline
-        # ranked_chunks = rerank(question, ranked_chunks, mode=cfg.rerank_mode, top_n=cfg.top_k)
-    
-    # Step 4: Generation
-    model_path = args.model_path or cfg.model_path
-    system_prompt = args.system_prompt_mode or cfg.system_prompt_mode
-    ans = answer(
-        question, 
-        ranked_chunks, 
-        model_path, 
-        max_tokens=cfg.max_gen_tokens, 
-        system_prompt_mode=system_prompt
+    Synthesizes the final answer using the retrieved context.
+    """
+    synthesis_prompt = (
+        f"Based on the following context, please provide a comprehensive answer to the user's query.\n\n"
+        f"Context:\n{context}\n\n"
+        f"Query: {query}"
     )
     
-    return ans
-
+    return answer(
+        question=synthesis_prompt,
+        ranked_chunks=[],
+        model_path=model_path,
+        max_tokens=max_tokens,
+        system_prompt_mode=system_prompt_mode
+    )
 
 def run_chat_session(args: argparse.Namespace, cfg: QueryPlanConfig):
     """
     Initializes artifacts and runs the main interactive chat loop.
     """
     logger = get_logger()
-    # planner = HeuristicQueryPlanner(cfg)
 
-    # Load artifacts, initialize retrievers and rankers once before the loop.
-    print("Welcome to Tokensmith! Initializing chat...")
+    print("Welcome to Tokensmith! Initializing agent...")
     try:
-        # Disabled till we fix the core pipeline
-        # cfg = planner.plan(q)
         artifacts_dir = cfg.make_artifacts_directory()
-        faiss_index, bm25_index, chunks, sources = load_artifacts(
-            artifacts_dir=artifacts_dir, 
-            index_prefix=args.index_prefix
-        )
 
-        retrievers = [
-            FAISSRetriever(faiss_index, cfg.embed_model),
-            BM25Retriever(bm25_index)
+        # Initialize tools
+        chunks_path = str(artifacts_dir / f"{args.index_prefix}_chunks.pkl")
+        tools = [
+            GrepTool(document_path="data/book_without_image.md"),
+            FaissSearchTool(
+                index_path=str(artifacts_dir / f"{args.index_prefix}.faiss"),
+                embed_model=cfg.embed_model,
+                chunks_path=chunks_path
+            ),
+            BM25ExplorerTool(
+                index_path=str(artifacts_dir / f"{args.index_prefix}_bm25.pkl"),
+                chunks_path=chunks_path
+            ),
+            HierarchicalRetrieverTool(
+                faiss_index_path=str(artifacts_dir / f"{args.index_prefix}.faiss"),
+                bm25_index_path=str(artifacts_dir / f"{args.index_prefix}_bm25.pkl"),
+                embed_model=cfg.embed_model,
+                model_path=args.model_path or cfg.model_path,
+                chunks_path=chunks_path
+            )
         ]
-        ranker = EnsembleRanker(
-            ensemble_method=cfg.ensemble_method,
-            weights=cfg.ranker_weights,
-            rrf_k=int(cfg.rrf_k)
-        )
         
-        # Package artifacts for reuse
-        artifacts = {
-            "chunks": chunks,
-            "sources": sources,
-            "retrievers": retrievers,
-            "ranker": ranker
-        }
+        orchestrator = AgenticOrchestrator(tools=tools, model_path=args.model_path or cfg.model_path)
+
     except Exception as e:
         print(f"ERROR: Failed to initialize chat artifacts: {e}")
         print("Please ensure you have run 'index' mode first.")
@@ -208,8 +171,22 @@ def run_chat_session(args: argparse.Namespace, cfg: QueryPlanConfig):
                 print("Goodbye!")
                 break
 
-            # Use the single query function
-            ans = get_answer(q, cfg, args, logger=logger,artifacts=artifacts)
+            logger.log_query_start(q)
+            start_time = time.time()
+
+            # 1. Use the orchestrator to get the retrieved context
+            retrieved_context = orchestrator.run(q)
+
+            # 2. Synthesize the final answer
+            ans = get_final_answer(
+                query=q,
+                context=retrieved_context,
+                model_path=args.model_path or cfg.model_path,
+                max_tokens=cfg.max_gen_tokens,
+                system_prompt_mode=args.system_prompt_mode or cfg.system_prompt_mode
+            )
+
+            end_time = time.time()
 
             print("\n=================== START OF ANSWER ===================")
             print(ans.strip() if ans and ans.strip() else "(No output from model)")
@@ -223,9 +200,6 @@ def run_chat_session(args: argparse.Namespace, cfg: QueryPlanConfig):
             print(f"\nAn unexpected error occurred: {e}")
             logger.log_error(str(e))
             break
-
-    # TODO: Fix completion logging.
-    # logger.log_query_complete()
 
 
 def main():
