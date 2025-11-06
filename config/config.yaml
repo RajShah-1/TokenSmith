@@ -1,12 +1,11 @@
 embed_model: "models/Qwen3-Embedding-4B-Q5_K_M.gguf"
 top_k: 5
 pool_size: 50
-ensemble_method: "rrf"
+ensemble_method: "borda"
 ranker_weights: {"faiss":0.5,"bm25":0.5}
 rrf_k: 60
 max_gen_tokens: 400
 seg_filter: null
-chunk_mode : "sections"
+chunk_mode : "sentence_window"
 model_path: "models/qwen2.5-1.5b-instruct-q5_k_m.gguf"
-recursive_chunk_size: 2000
-recursive_overlap: 400
+sentence_window_size: 3

@@ -17,7 +17,7 @@ import faiss
 from rank_bm25 import BM25Okapi
 from src.embedder import SentenceTransformer
 
-from src.preprocessing.chunking import DocumentChunker, ChunkConfig
+from src.preprocessing.chunking import DocumentChunker, ChunkConfig, SentenceWindowConfig
 from src.preprocessing.extraction import extract_sections_from_markdown
 from src.config import QueryPlanConfig
 
@@ -93,9 +93,21 @@ def build_index(
     # Step 2: Create embeddings for FAISS index
     print(f"Embedding {len(all_chunks):,} chunks with {pathlib.Path(embedding_model_path).stem} ...")
     embedder = SentenceTransformer(embedding_model_path)
-    embeddings = embedder.encode(
-        all_chunks, batch_size=4, show_progress_bar=True
-    )
+
+    if isinstance(chunk_config, SentenceWindowConfig):
+        # For sentence window, we embed the middle sentence of each chunk
+        sentences_to_embed = []
+        for chunk in all_chunks:
+            sentences = re.split(r'(?<=[.!?]) +', chunk)
+            middle_sentence = sentences[len(sentences) // 2]
+            sentences_to_embed.append(middle_sentence)
+        embeddings = embedder.encode(
+            sentences_to_embed, batch_size=4, show_progress_bar=True
+        )
+    else:
+        embeddings = embedder.encode(
+            all_chunks, batch_size=4, show_progress_bar=True
+        )
 
     # Step 3: Build FAISS index
     print(f"Building FAISS index for {len(all_chunks):,} chunks...")

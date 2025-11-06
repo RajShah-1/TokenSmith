@@ -7,7 +7,7 @@ from typing import Dict, Callable, Any
 import yaml
 import pathlib
 
-from src.preprocessing.chunking import ChunkStrategy, make_chunk_strategy, SectionRecursiveConfig, ChunkConfig
+from src.preprocessing.chunking import ChunkStrategy, make_chunk_strategy, SectionRecursiveConfig, ChunkConfig, SentenceWindowConfig
 
 
 @dataclass
@@ -95,8 +95,12 @@ class QueryPlanConfig:
                 recursive_chunk_size=raw.get("recursive_chunk_size", 1000),
                 recursive_overlap=raw.get("recursive_overlap", 0)
             )
+        elif chunk_mode == "sentence_window":
+            return SentenceWindowConfig(
+                window_size=raw.get("sentence_window_size", 3)
+            )
         else:
-            raise ValueError(f"Unknown chunk_mode: {chunk_mode}. Only 'sections' is supported.")
+            raise ValueError(f"Unknown chunk_mode: {chunk_mode}. Only 'sections' and 'sentence_window' are supported.")
 
     def _validate(self) -> None:
         assert self.top_k > 0, "top_k must be > 0"

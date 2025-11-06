@@ -45,6 +45,8 @@ class EnsembleRanker:
             ordered = self._weighted_rrf_fuse(per_retriever_scores)
         elif self.ensemble_method == "linear":
             ordered = self._weighted_linear_fuse(per_retriever_scores)
+        elif self.ensemble_method == "borda":
+            ordered = self._borda_fuse(per_retriever_scores)
         else:
             raise NotImplementedError(f"Ranking method '{self.ensemble_method}' is not implemented.")
 
@@ -79,11 +81,35 @@ class EnsembleRanker:
         for name, scores in per_retriever_scores.items():
             weight = self.weights.get(name, 0)
             if weight > 0:
-                normalized_scores = self._normalize(scores)
+                normalized_scores = EnsembleRanker.normalize(scores)
                 for cand, norm_score in normalized_scores.items():
                     combined_scores[cand] += weight * norm_score
 
         return sorted(combined_scores, key=combined_scores.get, reverse=True)
+
+    def _borda_fuse(self, per_retriever_scores: Dict[str, Dict[Candidate, float]]) -> List[int]:
+        """Performs weighted Borda count fusion."""
+        borda_scores = defaultdict(float)
+        all_candidates = {cand for scores in per_retriever_scores.values() for cand in scores}
+
+        # Convert scores to ranks for each retriever
+        per_retriever_ranks = {
+            name: self.scores_to_ranks(scores)
+            for name, scores in per_retriever_scores.items()
+        }
+
+        # Calculate Borda scores
+        for cand in all_candidates:
+            current_score = 0.0
+            for name, ranks in per_retriever_ranks.items():
+                if cand in ranks:
+                    num_candidates = len(ranks)
+                    # Borda score is the number of items ranked lower
+                    borda_rank = num_candidates - ranks[cand]
+                    current_score += self.weights.get(name, 0) * borda_rank
+            borda_scores[cand] = current_score
+
+        return sorted(borda_scores, key=borda_scores.get, reverse=True)
 
     @staticmethod
     def scores_to_ranks(scores: Dict[Candidate, float]) -> Dict[Candidate, int]:

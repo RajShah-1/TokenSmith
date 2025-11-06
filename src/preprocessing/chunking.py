@@ -44,6 +44,18 @@ class SectionRecursiveConfig(ChunkConfig):
         assert self.recursive_overlap >= 0, "recursive_overlap must be >= 0"
 
 
+@dataclass
+class SentenceWindowConfig(ChunkConfig):
+    """Configuration for sentence window-based chunking."""
+    window_size: int = 3
+
+    def to_string(self) -> str:
+        return f"chunk_mode=sentence_window, window_size={self.window_size}"
+
+    def validate(self):
+        assert self.window_size > 0, "window_size must be > 0"
+
+
 # -------------------------- Chunking Strategies --------------------------
 
 class ChunkStrategy(ABC):
@@ -90,11 +102,41 @@ class SectionRecursiveStrategy(ChunkStrategy):
         return splitter.split_text(text)
 
 
+class SentenceWindowStrategy(ChunkStrategy):
+    """
+    Creates chunks based on a sliding window of sentences.
+    """
+
+    def __init__(self, config: SentenceWindowConfig):
+        self.config = config
+        self.window_size = config.window_size
+
+    def name(self) -> str:
+        return f"sentence_window(window_size={self.window_size})"
+
+    def artifact_folder_name(self) -> str:
+        return "sentence_window"
+
+    def chunk(self, text: str) -> List[str]:
+        """
+        Splits text into sentences and creates a sliding window of sentences.
+        """
+        sentences = re.split(r'(?<=[.!?]) +', text)
+        chunks = []
+        for i in range(len(sentences)):
+            start = max(0, i - self.window_size // 2)
+            end = min(len(sentences), i + self.window_size // 2 + 1)
+            chunks.append(" ".join(sentences[start:end]))
+        return chunks
+
+
 # -------------------------- Strategy Factory -----------------------------
 
 def make_chunk_strategy(config: ChunkConfig) -> ChunkStrategy:
     if isinstance(config, SectionRecursiveConfig):
         return SectionRecursiveStrategy(config)
+    if isinstance(config, SentenceWindowConfig):
+        return SentenceWindowStrategy(config)
     raise ValueError(f"Unknown chunk config type: {config.__class__.__name__}")
 
 
