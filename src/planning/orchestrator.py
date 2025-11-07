@@ -55,8 +55,5 @@ class AgenticOrchestrator:
             return f"Error: The LLM chose a tool that does not exist: {tool_name}"
 
         tool = self.tools[tool_name]
-        try:
-            result = tool.run(tool_args)
-            return result
-        except Exception as e:
-            return f"Error executing the '{tool_name}' tool: {e}"
+        result = tool.run(tool_args)
+        return result

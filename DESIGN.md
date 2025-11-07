@@ -1,60 +1,55 @@
-# DESIGN: Agent-Based RAG Orchestrator
+# DESIGN: Agent-Based RAG with a DBMS-Inspired Planner
 
-This document outlines the design for a new agent-based RAG system for the TokenSmith pipeline. This system will use a Small Language Model (SLM) as an orchestrator to dynamically select and use a variety of retrieval tools to answer user queries.
+This document outlines a refined architecture for the TokenSmith RAG pipeline. The core idea is to treat the retrieval process like a database query planning problem. An SLM-based agent will act as a "query planner," analyzing a user's question and choosing the most efficient "access path" (retrieval tool) to find the answer in our document store.
 
-## 1. The Agent's Reasoning Loop
+This design prioritizes structured retrieval, robustness, and predictable latency.
 
-The core of the system is a single-shot, tool-forming agent. To stay within the strict latency budget (max 5 LLM calls), the agent will operate in a highly efficient, non-iterative manner. The process for answering a query will be as follows:
+## 1. The Agent as a Query Planner
 
-1.  **Planning (1st LLM Call):** The user's query is combined with a detailed prompt that lists the available tools and their capabilities. The SLM is instructed to analyze the query and select the *single best tool* to answer it. The SLM's output will be a structured JSON object containing the chosen `tool_name` and its `arguments`.
+The agent's reasoning loop is a single-shot, non-iterative process designed for low latency and high predictability. It consists of two main stages:
 
-2.  **Tool Execution (No LLM Call):** The `AgenticOrchestrator` will parse the JSON output from the planning step and execute the specified tool with the provided arguments. The tool will return a string containing the retrieved context.
+1.  **Planning (1st LLM Call):** The user's query is provided to the SLM, which has a "menu" of available tools (access paths). The SLM's task is to identify the best tool and formulate the precise arguments needed to execute it. This is analogous to a query optimizer choosing between a full table scan, an index scan, or a more complex join operation. The output is a single, structured JSON object specifying the `tool_name` and its `arguments`.
 
-3.  **Synthesis (2nd LLM Call):** The retrieved context is then combined with the original query in a final prompt. The SLM is asked to synthesize a final answer for the user based on this context.
+2.  **Execution & Synthesis (Tool Execution + 2nd LLM Call):** The chosen tool is executed with the specified arguments. The retrieved context is then passed to the SLM in a final call to synthesize a human-readable answer.
 
-This entire process will consume a maximum of **two** LLM calls, well within our latency budget.
+This two-call architecture ensures that the system remains within our latency budget while allowing for a sophisticated, query-dependent retrieval strategy.
 
-## 2. Tool API Definitions
+## 2. The Toolset: Access Paths for Document Retrieval
 
-All tools will adhere to a simple, consistent interface. Each tool will be a class with a `run` method that accepts a dictionary of arguments and returns a string.
+Our toolset is designed to provide a range of specialized "access paths" into our document collection. All tools will be designed to "fail loudly" by raising exceptions on errors, rather than returning error strings.
 
 ### a. `GrepTool`
-*   **Description:** Performs a simple, case-insensitive keyword search over the raw text of the documents. Useful for finding specific terms, names, or acronyms.
-*   **Arguments:**
-    *   `query` (string): The keyword or phrase to search for.
-*   **Returns:** A formatted string containing the lines that match the query.
+*   **Description:** A direct, substring-matching tool. This is our "full table scan" and is most effective for finding specific, literal strings, such as error messages, function names, or unique identifiers.
+*   **Arguments:** `query` (string)
+*   **Returns:** A formatted string of matching lines.
 
 ### b. `FaissSearchTool`
-*   **Description:** Performs a semantic search using vector embeddings. Ideal for finding conceptually related information, even if the keywords don't match exactly.
-*   **Arguments:**
-    *   `query` (string): The natural language query to search for.
-*   **Returns:** A formatted string containing the top-k most semantically similar chunks of text.
+*   **Description:** A semantic vector search tool. This is our "primary index scan" for conceptual queries. It's best for understanding user intent and finding information that is thematically related, even if the keywords don't match.
+*   **Arguments:** `query` (string)
+*   **Returns:** A formatted string of the top-k most semantically similar text chunks.
 
 ### c. `BM25ExplorerTool`
-*   **Description:** Uses the BM25 algorithm to find documents that are highly relevant to the query's keywords, balancing term frequency and inverse document frequency. Excellent for queries that depend on specific but common terms.
-*   **Arguments:**
-    *   `query` (string): The query to search for.
-*   **Returns:** A formatted string containing the top-k most relevant chunks of text.
+*   **Description:** A keyword-based relevance search tool. This is our "secondary index scan," ideal for queries that rely on specific but potentially common terms where TF-IDF is a strong signal.
+*   **Arguments:** `query` (string)
+*   **Returns:** A formatted string of the top-k most relevant text chunks.
 
-### d. `HierarchicalRetrieverTool`
-*   **Description:** A more advanced tool that first retrieves a broad set of documents and then uses a *single* LLM call to re-rank or summarize them to find the most relevant snippets. This is best for complex, multi-faceted queries that require synthesizing information from multiple sources.
-*   **Arguments:**
-    *   `query` (string): The complex query.
-*   **Returns:** A concise summary of the most relevant information, generated by the tool's internal LLM call.
+### d. `SectionRetrieverTool` (New Primary Advanced Tool)
+*   **Description:** A two-step, hierarchical retrieval tool inspired by multi-level database indexes. It's designed for complex queries that are best answered by first identifying a relevant document section and then pinpointing the exact information within it.
+*   **Process:**
+    1.  **Step 1 (Summary Scan):** Performs a semantic search over an index of pre-computed *section summaries*. This quickly narrows down the search space to the most relevant section of the document.
+    2.  **Step 2 (Sentence-Window Scan):** Within the identified section, it performs a second, localized search to find the most relevant sentence window.
+*   **Arguments:** `query` (string)
+*   **Returns:** A formatted string containing both the summary of the section and the precise sentence window, providing the LLM with both broad context and specific details.
 
-## 3. Latency Budget Analysis
+## 3. The Indexing Pipeline: Pre-computing for Performance
 
-The proposed architecture is designed to be highly efficient and will operate comfortably within the five-LLM-call limit.
+To support our new `SectionRetrieverTool`, the indexing process will be refactored to pre-compute the necessary data structures. This is analogous to a database's `CREATE INDEX` command.
 
-*   **Standard Query:**
-    1.  **Planning:** 1 LLM call to select a tool.
-    2.  **Synthesis:** 1 LLM call to generate the final answer.
-    *   **Total:** **2 LLM calls.**
+The new indexing pipeline will:
+1.  **Extract Sections:** As before, the raw text will be divided into its constituent sections (e.g., chapters or subheadings).
+2.  **Generate Section Summaries (New Step):** For each section, a single LLM call will be made to generate a concise summary.
+3.  **Create Two Indexes:**
+    *   **Summaries Index:** A FAISS index will be created for the vector embeddings of the section summaries.
+    *   **Full-Text Index:** A separate FAISS index and a BM25 index will be created for the full-text chunks of the document, as before.
 
-*   **Complex Query (using `HierarchicalRetrieverTool`):**
-    1.  **Planning:** 1 LLM call to select the `HierarchicalRetrieverTool`.
-    2.  **Tool's Internal Re-ranking:** 1 LLM call inside the tool to summarize/re-rank.
-    3.  **Synthesis:** 1 LLM call to generate the final answer.
-    *   **Total:** **3 LLM calls.**
-
-In all foreseen scenarios, the system will use a maximum of three LLM calls, leaving a generous buffer within our five-call budget. This design prioritizes latency while enabling a more dynamic and intelligent retrieval process.
+This upfront computational cost during indexing will enable our agent to perform highly efficient, two-step retrievals at query time.

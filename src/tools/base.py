@@ -30,17 +30,12 @@ class GrepTool(Tool):
     def run(self, args: Dict[str, Any]) -> str:
         query = args.get("query")
         if not query:
-            return "Error: The 'query' argument is required for the grep tool."
+            raise ValueError("The 'query' argument is required for the grep tool.")
 
-        try:
-            result = subprocess.run(
-                ["grep", "-i", query, self.document_path],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return result.stdout
-        except FileNotFoundError:
-            return f"Error: The source file '{self.document_path}' was not found."
-        except subprocess.CalledProcessError as e:
-            return f"Error executing grep: {e.stderr}"
+        result = subprocess.run(
+            ["grep", "-i", query, self.document_path],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout

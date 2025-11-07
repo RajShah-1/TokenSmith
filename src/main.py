@@ -11,6 +11,7 @@ from src.instrumentation.logging import init_logger, get_logger, RunLogger
 from src.tools.base import GrepTool
 from src.tools.retrieval import FaissSearchTool, BM25ExplorerTool
 from src.tools.hierarchical import HierarchicalRetrieverTool
+from src.tools.section_retriever import SectionRetrieverTool
 from src.planning.orchestrator import AgenticOrchestrator
 from src.preprocessing.chunking import DocumentChunker
 from src.retriever import load_artifacts
@@ -97,6 +98,7 @@ def run_index_mode(args: argparse.Namespace, cfg: QueryPlanConfig):
         chunker=chunker,
         chunk_config=cfg.chunk_config,
         embedding_model_path=cfg.embed_model,
+        model_path=args.model_path or cfg.model_path,
         artifacts_dir=artifacts_dir,
         index_prefix=args.index_prefix,
         do_visualize=args.visualize,
@@ -133,10 +135,11 @@ def run_chat_session(args: argparse.Namespace, cfg: QueryPlanConfig):
 
         # Initialize tools
         chunks_path = str(artifacts_dir / f"{args.index_prefix}_chunks.pkl")
+        summaries_path = str(artifacts_dir / f"{args.index_prefix}_summaries.pkl")
         tools = [
             GrepTool(document_path="data/book_without_image.md"),
             FaissSearchTool(
-                index_path=str(artifacts_dir / f"{args.index_prefix}.faiss"),
+                index_path=str(artifacts_dir / f"{args.index_prefix}_chunks.faiss"),
                 embed_model=cfg.embed_model,
                 chunks_path=chunks_path
             ),
@@ -144,8 +147,16 @@ def run_chat_session(args: argparse.Namespace, cfg: QueryPlanConfig):
                 index_path=str(artifacts_dir / f"{args.index_prefix}_bm25.pkl"),
                 chunks_path=chunks_path
             ),
+            SectionRetrieverTool(
+                summaries_index_path=str(artifacts_dir / f"{args.index_prefix}_summaries.faiss"),
+                chunks_index_path=str(artifacts_dir / f"{args.index_prefix}_chunks.faiss"),
+                summaries_path=summaries_path,
+                chunks_path=chunks_path,
+                section_to_chunks_path=str(artifacts_dir / f"{args.index_prefix}_section_to_chunks.pkl"),
+                embed_model=cfg.embed_model
+            ),
             HierarchicalRetrieverTool(
-                faiss_index_path=str(artifacts_dir / f"{args.index_prefix}.faiss"),
+                faiss_index_path=str(artifacts_dir / f"{args.index_prefix}_chunks.faiss"),
                 bm25_index_path=str(artifacts_dir / f"{args.index_prefix}_bm25.pkl"),
                 embed_model=cfg.embed_model,
                 model_path=args.model_path or cfg.model_path,

@@ -21,7 +21,7 @@ class FaissSearchTool(Tool):
     def run(self, args: Dict[str, Any]) -> str:
         query = args.get("query")
         if not query:
-            return "Error: The 'query' argument is required for the faiss_search tool."
+            raise ValueError("The 'query' argument is required for the faiss_search tool.")
 
         scores = self.retriever.get_scores(query, 5, self.chunks)
         top_k_indices = sorted(scores, key=scores.get, reverse=True)[:5]
@@ -46,7 +46,7 @@ class BM25ExplorerTool(Tool):
     def run(self, args: Dict[str, Any]) -> str:
         query = args.get("query")
         if not query:
-            return "Error: The 'query' argument is required for the bm25_explorer tool."
+            raise ValueError("The 'query' argument is required for the bm25_explorer tool.")
 
         scores = self.retriever.get_scores(query, 5, self.chunks)
         top_k_indices = sorted(scores, key=scores.get, reverse=True)[:5]
